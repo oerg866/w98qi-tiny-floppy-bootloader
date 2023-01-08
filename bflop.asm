@@ -216,9 +216,9 @@ err_read:
 %endif
     jmp $
 
-errStr db 'a20err!!',0
-errStrRead db 'read err!!',0
-errStrK db 'krnlerr!!',0
+errStr db 'a20_1',0
+errStrRead db 'read',0
+errStrK db 'krnl',0
 pstr db 'B',0
 
 
