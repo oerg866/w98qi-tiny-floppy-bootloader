@@ -32,10 +32,10 @@ org	0x7c00
 	mov	sp, 0x7c00			; setup stack 
 
     ; now get into protected move (32bit) as kernel is large and has to be loaded high
-    mov ax, 0x2401 ; A20 line enable via BIOS
-    int 0x15
-    jc err
 
+    in     	al, 0x92
+    or      al, 2
+    out     0x92,al
 
     lgdt [gdt_desc] ; load global descriptor table
     mov eax, cr0
