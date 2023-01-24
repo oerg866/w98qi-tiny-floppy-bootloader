@@ -25,14 +25,14 @@ K_SZ=`stat -c %s $KERN`
 #R_SZ=`stat -c %s $RD`
 
 #padding to make it up to a sector
-K_PAD=$((512 - $K_SZ % 512))
+K_PAD=$((1024 - $K_SZ % 1024))
 #R_PAD=$((512 - $R_SZ % 512))
 
 nasm -o $OUTPUT -D initRdSizeDef=$R_SZ $INPUT
 cp $OUTPUT bootloader.bin
 
 cat $KERN >> $OUTPUT
-if [[ $K_PAD -lt 512 ]]; then
+if [[ $K_PAD -lt 1024 ]]; then
     dd if=/dev/zero bs=1 count=$K_PAD >> $OUTPUT
 fi
 

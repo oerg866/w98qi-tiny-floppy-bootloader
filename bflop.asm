@@ -17,25 +17,35 @@
 
 ; Useful links:
 
-%define DEBUG
 %include "config.inc"
 
 [BITS 16]
-org	0x7c00
+org 0x7c00
 
     ;;; the whole opening preamble enables "unreal mode" -- for more info, see
     ;;; https://wiki.osdev.org/Unreal_Mode
-	cli
-	xor	ax, ax
-	mov	ds, ax
-	mov	ss, ax
-	mov	sp, 0x7c00			; setup stack 
+entry:
+    cli
+    xor ax, ax
+    mov ds, ax
+    mov ss, ax
+    mov sp, 0x7c00          ; setup stack 
+
+    ; we load the 2nd sector to 0x7e00 so we can overwrite 7c00 with another boot sector if 
+    ; the boot prompt is skipped
+    
+    mov ax, 0x0001 ; count
+    mov bx, 0x7E00 ; offset
+    mov cx, 0x0000 ; segment
+    call flopread
+
+    call bootCheck
 
     ; now get into protected move (32bit) as kernel is large and has to be loaded high
-
-    in     	al, 0x92
-    or      al, 2
-    out     0x92,al
+    ; TODO: Add more / safer methods to do this, I read about olivetti machines being broken with this
+    in al, 0x92
+    or al, 2
+    out 0x92,al
 
     lgdt [gdt_desc] ; load global descriptor table
     mov eax, cr0
@@ -53,17 +63,18 @@ org	0x7c00
     mov cr0, eax
     
     xor ax,ax ; restore segment values - now limits are removed but seg regs still work as normal
-	mov	ds, ax
-	mov	gs, ax
-    mov ax, 0x1000 ; segment for kernel load (mem off 0x10000)
-	mov	es, ax
+    mov ds, ax
+    mov gs, ax
+    mov cx, 0x1000 ; segment for kernel load (mem off 0x10000)
+    mov es, cx
     sti
 
     ; now in UNREAL mode
-
-    mov ax, 1 ; one sector
-    xor bx,bx ; offset
-    mov cx, 0x1000 ; seg
+    
+    mov bx, ax ; ax is 0 right now
+    inc al ; one sector
+    ; xor bx,bx ; offset
+    ; mov cx, 0x1000 ; seg cx is already 0x1000 here.
     ; copy the first 512 bytes of the image in so we can read its size
     call flopread 
 
@@ -82,10 +93,11 @@ read_kernel_setup:
     mov cx, 0x1000 ; segment
     call flopread
 
-    cmp word [es:0x206], 0x204 ; require protocol 2.04+ 
-    jb errK
+    ; We assume the kernel being run is new enough to save bytes...
+    ; cmp word [es:0x206], 0x204 ; require protocol 2.04+ 
+    ; jb errKernel
     test byte [es:0x211], 1 ; make sure the real mode loader _actually_ wants to be at 0x10000
-    jz errK
+    jz errKernel
 
     mov byte [es:0x210], 0xe1 ;loader type we set this ourselves
     mov byte [es:0x211], 0x81 ;heap use? !! SET Bit5 to Make Kern Quiet
@@ -106,26 +118,37 @@ read_kernel_setup:
 ;load_kernel
     mov edx, [es:0x1f4] ; bytes to load
     shl edx, 4 ; (note that edx is initially loaded with size in "16-byte paras")
-    call loader
 
-; we disable the initrd code -- if you need initrd, you could try 
-; reenabling it (or just embed your initramfs cpio in your kernel i have no idea
-; how you crammed a mountable initrd image on a floppy)
+; ================= functions ====================
+;length in bytes into edx
+; uses flopread [hddLBA] and highmove [highmove_addr] vars
+;clobbers 0x2000 segment
+loader:
+.loop:
+    cmp edx, 127*512
+    jl loader.part_2
+    jz loader.finish
 
-;load initrd
-;    mov eax, 0x7fab000; this is the address qemu loads it at
-;    mov [highmove_addr],eax ; end of kernel and initrd load address
-    ;mov eax, [highmove_addr] ; end of kernel and initrd load address
-    ;add eax, 4096
-    ;and eax, 0xfffff000
-    ;mov [highmove_addr],eax ; end of kernel and initrd load address
+    push edx
+    mov ax, 127 ;count
 
-;    mov [es:0x218], eax
-;    mov edx, [initRdSize] ; ramdisk size in bytes
-;    mov [es:0x21c], edx ; ramdisk size into kernel header
-;    call loader
+    call readFloppyToSeg2000Offset0
 
+    mov si, progStr
+    call print
+    pop edx
+    sub edx, 127*512
 
+    jmp loader.loop
+
+.part_2:   ; load less than 127*512 sectors
+    shr edx, 9  ; divide by 512
+    inc edx     ; increase by one to get final sector if not multiple - otherwise just load junk - doesn't matter
+    mov ax, dx
+
+    call readFloppyToSeg2000Offset0
+
+.finish:
 
 kernel_start:
     cli
@@ -138,42 +161,12 @@ kernel_start:
     mov sp, 0xe000
     jmp 0x1020:0
 
-    jmp $
-
-; ================= functions ====================
-;length in bytes into edx
-; uses flopread [hddLBA] and highmove [highmove_addr] vars
-;clobbers 0x2000 segment
-loader:
-.loop:
-    cmp edx, 127*512
-    jl loader.part_2
-    jz loader.finish
-
-    mov ax, 127 ;count
+; To save more bytes, we put this in a subroutine, as we have two calls like this
+readFloppyToSeg2000Offset0:
     xor bx, bx ; offset
     mov cx, 0x2000 ; seg
-    push edx
     call flopread
     call highmove
-
-    mov si, pstr
-    call print
-    pop edx
-    sub edx, 127*512
-
-    jmp loader.loop
-
-.part_2:   ; load less than 127*512 sectors
-    shr edx, 9  ; divide by 512
-    inc edx     ; increase by one to get final sector if not multiple - otherwise just load junk - doesn't matter
-    mov ax, dx
-    xor bx,bx
-    mov cx, 0x2000
-    call flopread
-    call highmove
-
-.finish:
     ret
 
 highmove_addr dd 0x100000
@@ -195,46 +188,17 @@ highmove:
     mov [highmove_addr], edi
     ret
 
-err:
-%ifdef DEBUG
+errStr db 'ER'
+progStr db '.',0 ; Save one byte 
+
+errRead: mov byte [progStr], 0x31       ; Replace dot with the error number
+    jmp errPrint
+errKernel: mov byte [progStr], 0x32     ; Replace dot with the error number
+errPrint:
     mov si, errStr
     call print
-%endif
     jmp $
-
-errK:
-%ifdef DEBUG
-    mov si, errStrK
-    call print
-%endif
-    jmp $
-
-err_read:
-%ifdef DEBUG
-    mov si, errStrRead
-    call print
-%endif
-    jmp $
-
-errStr db 'a20_1',0
-errStrRead db 'read',0
-errStrK db 'krnl',0
-pstr db 'B',0
-
-
-%ifdef DEBUG
-; si = source str
-print:
-    lodsb
-    and al, al
-    jz print.end
-    mov ah, 0xe
-    mov bx, 7
-    int 0x10
-    jmp print
-print.end:
-    ret
-%endif
+    
 
 flSect dw 1 ; start sector (this is zero-indexed)
 flopread:
@@ -293,14 +257,13 @@ flopread:
 
 
     xor dl, dl ; read from first floppy -- this may not be necessary
-    mov al, 0x01 ; read 1 sector
-    mov ah, 0x02 ; 
+    mov ax, 0x0201 ; read 1 sector
 
     push si
     mov si, 20 ; set floppy retry counter
 flopread.retry:
     dec si
-    jz err_read
+    jz errRead
     push ax
     push bx 
     push cx 
@@ -359,19 +322,149 @@ gdt_end:
 
 
 ;boot sector magic
-	times	510-($-$$)	db	0
-	dw	0xaa55
+    times   510-($-$$)  db  0
+    dw  0xaa55
+
+Sector2:
+
+; This check asks the user if he wants to boot our floppy/CDROM and if it times out then we
+; attempt to boot from a hard disk.
+bootCheck:
+    mov si, newLineStr
+    call print
+
+    ; Get initial tick value
+    call getCurrentTick
+    mov dword [lastSystemTime], ebx
+
+.waitEnterLoop:
+
+    mov si, bootStr
+    call print
+
+    ; check keyboard buffer
+    mov ah, 0x01 ; chek for keystroke
+    int 0x16
+    jnz .bootCheckOK
+
+.delay1Second:
+    ; I tried to use int 0x15 with ax=0x8600 here but for some reason this is way too fast on 86box...
+    ; So I have to use another method.
+    ;    mov cx, 0xf
+    ;    mov dx, 0x4240
+    ;    mov ax, 0x8600
+    ;    int 0x15 
+    call getCurrentTick
+
+    ; Check for midnight rollover
+    test al, al
+    jz .noMidnight
+
+    add ebx, 0x1800B0; 0x1800B0 per 24 hrs
+
+.noMidnight:
+    ; Check if this is a second's worth of difference.
+    mov ecx, dword [lastSystemTime]
+    mov eax, ebx
+    sub eax, ecx
+    cmp eax, 18 ; It's actually 18.2 clocks per second but good enough...
+    jl .waitEnterLoop ; Second hasnt elapsed yet, back to the loop
+
+    mov dword [lastSystemTime], ebx
+    mov al, byte [bootTimerStr]
+    dec al
+    cmp al, 0x30 ; '0' means we've timed out
+    jz .bootExit
+    mov byte [bootTimerStr], al
+
+    jmp .waitEnterLoop
+
+.bootExit:    
+    mov ax, 0x4b00
+    mov dl, 0
+    mov si, 0x7C00  ; We'll overwrite the boot sector anyway, so we tell it to dump stuff here.
+    int 13h         ; Bootable CD-ROM - TERMINATE DISK EMULATION
+    
+    xor ax, ax
+    mov dl, 0x80
+    int 13h         ; DISK - RESET DISK SYSTEM
+    
+    mov dl, 0x80    ; Start with first disk in priority list.
+.bootAttemptLoop:
+    call .loadHDDBootSector
+
+    ; if carry is set, we have an error condition and could not read.
+    jc .bootAttemptSetNextDrive
+
+    ; check for 0xaa55 signature
+    cmp word [0x7DFE], 0xAA55 ; remember this is byteswapped, in the sector it's 55 aa
+    je .bootHDD
+
+.bootAttemptSetNextDrive:
+    inc dl
+    cmp dl, 0xA0    ; I have no idea what the upper limit of this is
+    jne .bootAttemptLoop
+
+.bootError:
+    mov si, bootErrStr
+    call print
+    jmp $
+
+.bootHDD:    
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    jmp 0x7C00
+    
+
+; Try to load a boot sector from a disk to 0x7C00 and boot from it. 
+; dl = the drive to boot
+; CF is set on read error. Caller should check for 0x55AA signature.
+.loadHDDBootSector:
+    xor ax, ax
+    mov es, ax
+    mov bx, 0x7C00  ; target buffer 
+    mov ax, 0x0201  ; Read, 1 sector
+    mov cx, 1       ; Track 0, Sector 1
+    mov dh, 0       ; Head 0
+    int 13h         ; DISK - READ SECTORS INTO MEMORY
+    retn
+
+.bootCheckOK:
+    ; User pressed a key. We can now resume booting.
+    mov si, newLineStr
+    call print
+    ret
 
 
-; real mode print code
-;    mov si, strhw
-;    mov eax, 0xb8000
-;    mov ch, 0x1F ; white on blue
-;loop:
-;    mov cl, [si]
-;    mov word [ds:eax], cx
-;    inc si
-;    add eax, 2
-;    cmp [si], byte 0
-;    jnz loop
+newLineStr db 0xd, 0xa, 0
+bootStr db ' Press any key to boot Windows 98 QuickInstall ('
+bootTimerStr db '4 seconds left)', 0x0d, 0 ; the 0x0d means we go back to the start of the line so we can update the counter
+bootErrStr db 0xd, 0xa, ' No bootable Disk found! Halting.', 0
 
+lastSystemTime dd 0
+
+; Get current system tick using  int 0x1a
+; Returns midnight flag in al and 32 bit tick value in ebx
+getCurrentTick:
+    xor ax, ax
+    int 0x1a
+
+    mov bx, cx  ; Make 32-bit value ... easier
+    shl ebx, 16
+    mov bx, dx
+    ret
+
+; si = source str
+print:
+    mov ah, 0xe
+print.loop:
+    lodsb
+    int 0x10
+    test al, al
+    jnz print.loop
+print.end:
+    ret
+
+    times   1022-($-$$) db 0
+    dw 0xaa55
