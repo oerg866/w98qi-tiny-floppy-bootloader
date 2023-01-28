@@ -41,11 +41,13 @@ entry:
 
     call bootCheck
 
+    ; enable a20 gate and error out if unsuccessful
+
+    call enableA20Gate
+    or ax, ax
+    jz errA20
+
     ; now get into protected move (32bit) as kernel is large and has to be loaded high
-    ; TODO: Add more / safer methods to do this, I read about olivetti machines being broken with this
-    in al, 0x92
-    or al, 2
-    out 0x92,al
 
     lgdt [gdt_desc] ; load global descriptor table
     mov eax, cr0
@@ -191,6 +193,8 @@ highmove:
 errStr db 'ER'
 progStr db '.',0 ; Save one byte 
 
+errA20: mov byte [progStr], 0x30        ; Replace dot with the error number
+    jmp errPrint
 errRead: mov byte [progStr], 0x31       ; Replace dot with the error number
     jmp errPrint
 errKernel: mov byte [progStr], 0x32     ; Replace dot with the error number
@@ -319,7 +323,6 @@ gdt_end:
     ; see config.inc for more info
     ;nCylinders dw nCylindersPerHeadDef
     ;nSectors db nSectorsPerTrackDef
-
 
 ;boot sector magic
     times   510-($-$$)  db  0
@@ -464,6 +467,107 @@ print.loop:
     test al, al
     jnz print.loop
 print.end:
+    ret
+
+; Enables A20 Gate using several methods...
+; Returns 1 in ax if enabling was successful.
+enableA20Gate:
+
+.biosa20:               ; Enable A20 using BIOS
+
+    mov ax,2403h        ; Check if this method is supported first (else it will reboot!!!)
+    int 15h
+    jb .biosa20_skip    ; INT 15h is not supported
+    cmp ah,0
+    jnz .biosa20_skip   ; INT 15h is not supported
+
+    mov ax,2401h        ; INT 15h is supported, now try it
+    int 15h
+
+    call checkA20
+    or ax, ax
+    jnz .exit
+
+.biosa20_skip:
+
+.kbca20:            ; Enable A20 using Keyboard Controller
+    call waitForKBC
+    mov al, 0xd1
+    out 0x64,al
+    call waitForKBC
+    mov al, 0xdf
+    out 0x60, al
+    call waitForKBC
+
+    call checkA20
+    or ax, ax
+    jnz .exit
+
+.fasta20:           ; Last ditch effort, use Fast A20 on Port 0x92
+    in al, 0x92
+    or al, 2
+    out 0x92,al
+
+    call checkA20
+    or ax, ax
+    jnz .exit
+
+    ; We end up here with ax being 0, thus meaning unsuccessful :(
+
+.exit:
+    ret
+
+; Waits for Keyboard Controller to be ready
+waitForKBC:
+        in al, 0x64
+        test al, 0x02
+        jnz waitForKBC
+        ret
+
+; Checks the status of the a20 line.
+; Returns: 0 in ax if the a20 line is disabled (memory wraps around)
+;          1 in ax if the a20 line is enabled (memory does not wrap around)
+; Code from OSDev Wiki (Public Domain Licensed) - I'm too dumb for this...!
+checkA20:
+    push es
+    push ds
+    push si
+
+    xor ax, ax ; ax = 0
+    mov es, ax
+
+    not ax ; ax = 0xFFFF
+    mov ds, ax
+
+    mov di, 0x0500
+    mov si, 0x0510
+
+    mov al, byte [es:di]
+    push ax
+
+    mov al, byte [ds:si]
+    push ax
+
+    mov byte [es:di], 0x00
+    mov byte [ds:si], 0xFF
+
+    cmp byte [es:di], 0xFF
+
+    pop ax
+    mov byte [ds:si], al
+
+    pop ax
+    mov byte [es:di], al
+
+    mov ax, 0
+    je .exit
+
+    mov ax, 1
+
+.exit:
+    pop si
+    pop ds
+    pop es
     ret
 
     times   1022-($-$$) db 0
