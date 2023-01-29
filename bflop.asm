@@ -469,48 +469,108 @@ print.loop:
 print.end:
     ret
 
+;   ----------------------------------------------
+;   A20 GATE RELATED CODE
+;   ----------------------------------------------
+
+%macro writeKBCCommand 1
+    mov al, %1
+    out 0x64, al
+%endmacro
+
+%macro writeKBCData 1
+    mov al, %1
+    out 0x60, al
+%endmacro
+
+%macro IO_DELAY 0
+    xor ax, ax
+    out 0x80, al
+%endmacro
+
+%macro jumpIfA20Enabled 1
+    call checkA20
+    or ax, ax
+    jnz %1
+%endmacro
+
 ; Enables A20 Gate using several methods...
 ; Returns 1 in ax if enabling was successful.
 enableA20Gate:
+    jumpIfA20Enabled .exit
 
 .biosa20:               ; Enable A20 using BIOS
+   mov ax, 0x2403      ; Check if this method is supported first (else it will reboot!!!)
+   int 15h
 
-    mov ax,2403h        ; Check if this method is supported first (else it will reboot!!!)
-    int 15h
-    jb .biosa20_skip    ; INT 15h is not supported
-    cmp ah,0
-    jnz .biosa20_skip   ; INT 15h is not supported
+   jb .biosa20_skip    ; Get out if INT 15h is not supported
+   cmp ah, 0
+   jnz .biosa20_skip
 
-    mov ax,2401h        ; INT 15h is supported, now try it
-    int 15h
-
-    call checkA20
-    or ax, ax
-    jnz .exit
+   mov ax, 0x2401      ; INT 15h is supported, now try it
+   int 15h
 
 .biosa20_skip:
+    jumpIfA20Enabled .exit
 
-.kbca20:            ; Enable A20 using Keyboard Controller
-    call waitForKBC
-    mov al, 0xd1
-    out 0x64,al
-    call waitForKBC
-    mov al, 0xdf
-    out 0x60, al
+; This method from OSDev sadly reboots a few of my socket 7 machines
+; so I removed it. Commented code is kept for reference. Maybe I'm doing
+; something wrong?
+;
+;.kbca20_1:          ; Enable A20 using Keyboard Controller, method 1
+;	mov cx, 0x5     ; 5 attempts
+;.kbca20_1_loop:
+;    writeKBCCommand 0xad  ; Disable keyboard
+;    call waitForKBC
+;
+;    writeKBCCommand 0xd0    ; Command: Read from input
+;    call waitForKBC
+;
+;    in al, 0x60     ; Read the output port
+;    push ax         ; Save for later
+;    call waitForKBC
+;
+;    writeKBCCommand 0xd1    ; Command: Write to output
+;    call waitForKBC
+; 
+;    pop ax          ; set bit 2 to enable a20 gate
+;    or al, 2
+;    out 0x60, al
+;    call waitForKBC
+;
+;    writeKBCCommand 0xae    ; Enable keyboard again
+;    call waitForKBC
+;
+;    jumpIfA20Enabled .exit
+;    
+;    loop .kbca20_1_loop
+
+.kbca20:                    ; Linux's way to enable A20 via keyboard controller
     call waitForKBC
 
-    call checkA20
-    or ax, ax
-    jnz .exit
+    writeKBCCommand 0xd1    ; Command write
+    call waitForKBC
 
-.fasta20:           ; Last ditch effort, use Fast A20 on Port 0x92
+    writeKBCData 0xdf       ; Command: Enable A20
+    call waitForKBC
+
+    writeKBCCommand 0xff    ; dummy command, not sure why? Linux says "UHCI wants it"
+    call waitForKBC
+
+    jumpIfA20Enabled .exit
+
+.fasta20:           ; Another method, use Fast A20 on Port 0x92
     in al, 0x92
     or al, 2
+    and al, 0xfe    ; mask out reset bit!!
     out 0x92,al
 
-    call checkA20
-    or ax, ax
-    jnz .exit
+    jumpIfA20Enabled .exit
+
+.superfasta20:      ; Last ditch effort, use port 0xEE, some machines support this
+;    in al,0xee
+
+    jumpIfA20Enabled .exit
 
     ; We end up here with ax being 0, thus meaning unsuccessful :(
 
@@ -519,10 +579,34 @@ enableA20Gate:
 
 ; Waits for Keyboard Controller to be ready
 waitForKBC:
-        in al, 0x64
-        test al, 0x02
-        jnz waitForKBC
-        ret
+    push ax
+    push cx
+    mov cx, 0xFFFF
+.loop:
+    IO_DELAY
+    in al, 0x64
+    
+    ; Check if something is waiting in the keyboard buffer
+    ; if not, continue our check, else fetch it and reiterate
+    test al, 0x01
+    jz .nothingPendingCheckBuffersEmpty
+
+    ; There is something in the buffer, fetch it
+    IO_DELAY
+    in al, 0x60
+    loop .loop
+
+.nothingPendingCheckBuffersEmpty:
+; Nothing in the buffer, check if status indicates so
+    test al, 0x02
+    jz .exit
+    loop .loop
+
+.exit:
+; Keyboard controller is now flushed!
+    pop cx
+    pop ax
+    ret
 
 ; Checks the status of the a20 line.
 ; Returns: 0 in ax if the a20 line is disabled (memory wraps around)
@@ -531,15 +615,15 @@ waitForKBC:
 checkA20:
     push es
     push ds
+    push di
     push si
 
     xor ax, ax ; ax = 0
     mov es, ax
-
-    not ax ; ax = 0xFFFF
-    mov ds, ax
-
     mov di, 0x0500
+
+    mov ax, 0xffff
+    mov ds, ax
     mov si, 0x0510
 
     mov al, byte [es:di]
@@ -566,6 +650,7 @@ checkA20:
 
 .exit:
     pop si
+    pop di
     pop ds
     pop es
     ret
