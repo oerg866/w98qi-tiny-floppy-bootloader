@@ -1,15 +1,7 @@
 tiny-floppy-bootloader
 =====================
 
-A fork of tiny-linux-bootloader that is floppy-bootable and still fits in the first sector. This bootloader expects to find the kernel immediately after it at sector 1.  
-
-I wrote this because I was annoyed that syslinux took 200kb and lilo was too cursed (how did people live with that thing in the 90s/early 00s?)
-
-## Differences and tips
-* The boot sector is likely too large to fit in a partition table, but if you're booting off a floppy, i'd assume it's in your initrd anyway
-* Separate initrd support has been commented out (you could add it back in) -- to get around this, compile your kernel with the initrd embedded using `CONFIG_INITRAMFS_SOURCE`
-* By default build.sh and config.inc makes 1.44mb floppy images -- if you want to use 1.722mb or other sizes, you will have to edit config.inc and build.sh to accomodate
-
+A fork of tiny-floppy-bootloader that is fits 2 sectors instead of 1. This bootloader expects to find the kernel immediately after it at sector 2.
 
 ## Features/Purpose
 
@@ -22,10 +14,13 @@ I wrote this because I was annoyed that syslinux took 200kb and lilo was too cur
 
 To build, you need to:
 
-1. Edit build.sh and set paths to your kernel
-2. Edit config.inc to set your kernel cmd line (keep it <15chars for the moment, disabling debug makes more room)
-3. Run build.sh
-4. Now you can dd this onto your disk, if you have a partition table already, then do not overwrite bytes 446-510 on the first sector (so use dd twice).
+1. Run build.sh with the appropriate parameters:
+
+   `./build.sh <kernel bzImage> <output image> [Floppy Size in Bytes]`
+
+    Valid floppy sizes are: 1474560 (1.44MB), 1763328 (1.72MB), 2949120 (2.88MB)
+
+2. Now you can dd this onto your floppy.
 
 Your system should now boot with the new kernel.
 

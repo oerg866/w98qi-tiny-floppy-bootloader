@@ -1,6 +1,7 @@
 #!/bin/bash -e
 # Tiny Linux Bootloader
 # (c) 2014- Dr Gareth Owen (www.ghowen.me). All rights reserved.
+# Modifications by Eric Voirin (oerg866@googlemail.com).
 
 #    This program is free software: you can redistribute it and/or modify
 #    it under the terms of the GNU General Public License as published by
@@ -16,19 +17,48 @@
 #    along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 INPUT="bflop.asm"
-OUTPUT="disk.img"
-KERN="../bzImage"
-#RD="./big.init"
+OUTPUT="$2"
+KERN="$1"
+DISKSIZE="1474560" # Default = 1.44M floppy
+CYLINDERS=0
+SECTORS=0
 
-#size of kern + ramdisk
+if [[ "$#" -lt 2 ]]; then
+    echo "Insufficient parameters!"
+    echo "Syntax: ./build.sh <kernel bzImage> <output image> [Floppy Size in Bytes]"
+    echo "Size parameter is optional and can be one of these:"
+    echo "  1474560"
+    echo "  1763328"
+    echo "  2949120"
+    exit 127
+fi
+
+if [[ "$#" -gt 2 ]]; then
+    DISKSIZE="$3"
+fi
+
+# Get Cylinders per head for this size, we have a few hardcoded ones.
+if   [[ "$DISKSIZE" -eq 1474560 ]]; then
+    CYLINDERS=80
+    SECTORS=18
+elif [[ "$DISKSIZE" -eq 1763328 ]]; then
+    CYLINDERS=82
+    SECTORS=21
+elif [[ "$DISKSIZE" -eq 2949120 ]]; then
+    CYLINDERS=80
+    SECTORS=36
+else
+    echo "Unknown disk size specified!!! Aborting!"
+    exit 127
+fi
+
+#size of kernel
 K_SZ=`stat -c %s $KERN`
-#R_SZ=`stat -c %s $RD`
 
-#padding to make it up to a sector
+# Padding for the boot loader, 2 sectors á 512 bytes -> 1024 bytes
 K_PAD=$((1024 - $K_SZ % 1024))
-#R_PAD=$((512 - $R_SZ % 512))
 
-nasm -o $OUTPUT -D initRdSizeDef=$R_SZ $INPUT
+nasm -D nCylindersPerHeadDef=$CYLINDERS -D nSectorsPerTrackDef=$SECTORS -o $OUTPUT $INPUT
 cp $OUTPUT bootloader.bin
 
 cat $KERN >> $OUTPUT
@@ -36,20 +66,14 @@ if [[ $K_PAD -lt 1024 ]]; then
     dd if=/dev/zero bs=1 count=$K_PAD >> $OUTPUT
 fi
 
-#cat $RD >> $OUTPUT
-#if [[ $R_PAD -lt 512 ]]; then
-#    dd if=/dev/zero bs=1 count=$R_PAD >> $OUTPUT
-#fi
-
 # make an objdump of the bootloader for debugging purposes
 objdump -b binary --adjust-vma=0x7c00 -D bootloader.bin -m i8086 -M intel > objdump_out.objdump
 
 TOTAL=`stat -c %s $OUTPUT`
-if [[ $TOTAL -gt 1474560 ]]; then
-    echo "Warning: Floppy image exceeds 1.44mb!!!"
+if [[ $TOTAL -gt $DISKSIZE ]]; then
+    echo "Warning: Floppy image exceeds requrested size $DISKSIZE!!!"
 else
-    dd if=/dev/zero bs=1 count=$((1474560 - $TOTAL)) >> $OUTPUT
+    dd if=/dev/zero bs=1 count=$(($DISKSIZE - $TOTAL)) >> $OUTPUT
 fi
-echo "concatenated bootloader, kernel and initrd into ::> $OUTPUT"
-#echo "Note, your first partition must start after sector $(($TOTAL / 512))"
 
+echo "concatenated bootloader, kernel and initrd into ::> $OUTPUT"
