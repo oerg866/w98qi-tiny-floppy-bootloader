@@ -567,11 +567,6 @@ enableA20Gate:
 
     jumpIfA20Enabled .exit
 
-.superfasta20:      ; Last ditch effort, use port 0xEE, some machines support this
-;    in al,0xee
-
-    jumpIfA20Enabled .exit
-
     ; We end up here with ax being 0, thus meaning unsuccessful :(
 
 .exit:
