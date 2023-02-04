@@ -1,6 +1,7 @@
 ; Tiny Linux Bootloader
 ; (c) 2014- Dr Gareth Owen (www.ghowen.me). All rights reserved.
 ; Some code adapted from Sebastian Plotz - rewritten, adding pmode and initrd support.
+; Further adaptations for WIN98QI by Eric Voirin
 
 ;    This program is free software: you can redistribute it and/or modify
 ;    it under the terms of the GNU General Public License as published by
