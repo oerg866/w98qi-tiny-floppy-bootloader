@@ -347,8 +347,13 @@ bootCheck:
     call print
 
     ; check keyboard buffer
-    mov ah, 0x01 ; chek for keystroke
+    mov ah, 0x01     ; chek for keystroke
     int 0x16
+    jz .delay1Second ; No key was pressed
+
+    ; Check for F8 (user wants to enter SafeMode in existing installation probably)
+
+    cmp ax, 0x4200
     jnz .bootCheckOK
 
 .delay1Second:
@@ -442,7 +447,7 @@ bootCheck:
 
 
 newLineStr db 0xd, 0xa, 0
-bootStr db ' Press any key to boot Windows 98 QuickInstall ('
+bootStr db ' Press a key <except F8> to run QuickInstall ('
 bootTimerStr db '4 seconds left)', 0x0d, 0 ; the 0x0d means we go back to the start of the line so we can update the counter
 bootErrStr db 0xd, 0xa, ' No bootable Disk found! Halting.', 0
 
