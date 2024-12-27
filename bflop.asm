@@ -116,7 +116,7 @@ read_kernel_setup:
 
     ; modern kernels are bzImage ones (despite name on disk and so
     ; the protected mode part must be loaded at 0x100000
-    ; load 127 sectors at a time to 0x2000, then copy to 0x100000
+    ; load nSectorsPerStep sectors at a time to 0x2000, then copy to 0x100000
 
 ;load_kernel
     mov edx, [es:0x1f4] ; bytes to load
@@ -126,25 +126,26 @@ read_kernel_setup:
 ;length in bytes into edx
 ; uses flopread [hddLBA] and highmove [highmove_addr] vars
 ;clobbers 0x2000 segment
+
 loader:
 .loop:
-    cmp edx, 127*512
+    cmp edx, nSectorsPerStep*512
     jl loader.part_2
     jz loader.finish
 
     push edx
-    mov ax, 127 ;count
+    mov ax, nSectorsPerStep ;count
 
     call readFloppyToSeg2000Offset0
 
     mov si, progStr
     call print
     pop edx
-    sub edx, 127*512
+    sub edx, nSectorsPerStep*512
 
     jmp loader.loop
 
-.part_2:   ; load less than 127*512 sectors
+.part_2:   ; load less than nSectorsPerStep*512 sectors
     shr edx, 9  ; divide by 512
     inc edx     ; increase by one to get final sector if not multiple - otherwise just load junk - doesn't matter
     mov ax, dx
@@ -174,12 +175,12 @@ readFloppyToSeg2000Offset0:
 
 highmove_addr dd 0x100000
 ; source = 0x2000
-; count = 127*512  fixed, doesn't if matter we copy junk at end
+; count = nSectorsPerStep*512  fixed, doesn't if matter we copy junk at end
 ; don't think we can use rep movsb here as it wont use EDI/ESI in unreal mode
 highmove:
     mov esi, 0x20000
     mov edi, [highmove_addr]
-    mov edx, 512*127
+    mov edx, nSectorsPerStep*512
     mov ecx, 0 ; pointer
 .loop:
     mov eax, [ds:esi]
@@ -191,41 +192,39 @@ highmove:
     mov [highmove_addr], edi
     ret
 
-errStr db 'ER'
+errStr db ' ER'
 progStr db '.',0 ; Save one byte 
 
 errA20: mov byte [progStr], 0x30        ; Replace dot with the error number
     jmp errPrint
-errRead: mov byte [progStr], 0x31       ; Replace dot with the error number
+errRead:
+    rol ax, 4
+    call printHexDigit
+    rol ax, 4
+    call printHexDigit
     jmp errPrint
 errKernel: mov byte [progStr], 0x32     ; Replace dot with the error number
 errPrint:
     mov si, errStr
     call print
     jmp $
-    
 
 flSect dw 1 ; start sector (this is zero-indexed)
+
+; Floppy read function
+; ax -- number of sectors count (we save eax)
+; bx -- offset (possibly buggy on bad bioses, keep low or zero) (clob)
+; (should be fine as long as the real mode header isn't ungodly large)
+; cx -- segment address (clobberable)
 flopread:
     push eax
     push es
-    ; ax -- number of sectors count (we save eax)
-    ; bx -- offset (possibly buggy on bad bioses, keep low or zero) (clob)
-    ; (should be fine as long as the real mode header isn't ungodly large)
-    ; cx -- segment address (clobberable)
-
 
     ; al is sector read count
     ; cx is cylinder and sector,  dh is head, dl is drive
     ; es:bx is buffer address ptr 
     mov es, cx ; segment is constant in this operation
-    mov si, ax ; si is our sector counter
-    
-.loop:
-; HPC = 2
-; SPT = 18
-    ; 
-    ;
+
     ; convert sectors to CHS
     ; adapted from kolibrios 
     ; (https://github.com/Harmon758/kolibrios/blob/master/kernel/trunk/bootloader/boot_fat12.asm)
@@ -234,6 +233,8 @@ flopread:
     ; head number = pre.track number % number of heads
     ; track number = pre.track number / number of heads
     push bx
+
+    push ax
     mov ax, word [flSect]
     mov bx, nSectorsPerTrackDef
     xor dx, dx
@@ -246,55 +247,47 @@ flopread:
     ; !!!!!!! ax = track number, dx = head number
     mov ch, al          ; ch=track number
     xchg dh, dl         ; dh=head number
-    pop bx
+    pop ax
 
-
+    ; Increase sector counter
+    add word [flSect], ax
 
     ; so cx has an absolutely Cursed layout
     ; (see http://www.techhelpmanual.com/188-int_13h_02h__read_sectors.html)
     ; so we need to do some Funky Things 
     ; (thank you ibm i hate this)
     ; (this approach does not suppoprt more than 255 cylinders)
-    mov al, cl ; temp move sector number to al
-    and al, 0x3f ; lop off the top 2 bits
+    mov bl, cl ; temp move sector number to bl
+    and bl, 0x3f ; lop off the top 2 bits
     and cl, 0xc0 ; lop off the bottom 6 bits 
-    or cl, al ; add the sector number back in
+    or cl, bl ; add the sector number back in
 
+    pop bx
 
-    xor dl, dl ; read from first floppy -- this may not be necessary
-    mov ax, 0x0201 ; read 1 sector
+    xor dl, dl      ; read from first floppy -- this may not be necessary
+    mov ah, 0x02    ; action = read
 
     push si
     mov si, 20 ; set floppy retry counter
 flopread.retry:
+    push ax
+    int 0x13
+
+    jnc flopread.success
+
     dec si
     jz errRead
-    push ax
-    push bx 
-    push cx 
-    push dx
-    int 0x13
-    pop dx
-    pop cx
-    pop bx
+
     pop ax
-    jc flopread.retry
+    jmp flopread.retry
+
+flopread.success:
+    pop ax
     pop si
 
-    mov ax, word [flSect] ; increment floppy sector counter
-    inc ax
-    mov [flSect], ax
-
-    add bx, 512 ; increment offset
-    dec si ; decrement number of sects to read
-
-    
-    jnz flopread.loop
-flopread.finish:
     pop es
     pop eax
     ret
-
 
 ;descriptor
 gdt_desc:
@@ -316,6 +309,7 @@ gdt:
 gdt_end:
 
 ; config options
+    nSectorsPerStep equ 6   ; largest value that seems to work...?
     cmdLine db cmdLineDef,0
     cmdLineLen equ $-cmdLine
     ;initRdSize dd initRdSizeDef ; from config.inc
@@ -464,14 +458,31 @@ getCurrentTick:
     mov bx, dx
     ret
 
+printHexDigit:
+    push ax
+    and al, 0x0f
+    add al, '0'          ; Convert to ASCII ('0'-'9' for 0-9)
+    cmp al, '9'          ; Check if it's greater than '9'
+    jbe short printHexDigit.noHexAdj ; If <= '9', it's done
+    add al, 7            ; Adjust to 'A'-'F' for 10-15
+printHexDigit.noHexAdj:
+    call printChar
+    pop ax
+    ret
+
+printChar:
+    push ax
+    mov ah, 0x0E         ; BIOS teletype function
+    int 0x10             ; Call BIOS interrupt
+    pop ax
+    ret
+
 ; si = source str
 print:
-    mov ah, 0xe
-print.loop:
     lodsb
-    int 0x10
+    call printChar
     test al, al
-    jnz print.loop
+    jnz print
 print.end:
     ret
 
