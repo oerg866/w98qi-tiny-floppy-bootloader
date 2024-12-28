@@ -35,9 +35,13 @@ entry:
     ; we load the 2nd sector to 0x7e00 so we can overwrite 7c00 with another boot sector if 
     ; the boot prompt is skipped
     
-    mov ax, 0x0001 ; count
-    mov bx, 0x7E00 ; offset
-    mov cx, 0x0000 ; segment
+;   Original code, optimized for size a little
+;    mov ax, 0x0001 ; count
+;    mov bx, 0x7E00 ; offset
+;    mov cx, 0x0000 ; segment
+    mov cx, ax
+    inc ax
+    mov bx, 0x7E00
     call flopread
 
     call bootCheck
@@ -84,23 +88,27 @@ entry:
 read_kernel_setup:
     ; Useful reading:
     ; https://www.kernel.org/doc/Documentation/x86/boot.txt
-    mov al, [es:0x1f1] ; no of sectors (see: linux/x86 boot protocol)
-    cmp ax, 0
-    jne read_kernel_setup.next
-    mov ax, 4 ; default is 4 
-
+    mov si, [es:0x1f0]          ; no of sectors (see: linux/x86 boot protocol)
+    shr si, 8                   ; is 0?
+    jne read_kernel_setup.next  ; if so, don't set default value
+    mov si, 4                   ; default is 4 
 .next:
     ; now read the rest of the real mode kernel header in
-    ; ax = count
-    mov bx, 512 ; next offset
+    ; ax = count, bx = offset, cx = segment
+    mov bx, 512
+.loop:
     mov cx, 0x1000 ; segment
     call flopread
+    add bx, 512 ; next offset
+    dec si
+    jnz .loop
 
     ; We assume the kernel being run is new enough to save bytes...
     ; cmp word [es:0x206], 0x204 ; require protocol 2.04+ 
     ; jb errKernel
-    test byte [es:0x211], 1 ; make sure the real mode loader _actually_ wants to be at 0x10000
-    jz errKernel
+    ; We build our own kernels which we know work like this
+    ; test byte [es:0x211], 1 ; make sure the real mode loader _actually_ wants to be at 0x10000
+    ; jz errKernel
 
     mov byte [es:0x210], 0xe1 ;loader type we set this ourselves
     mov byte [es:0x211], 0x81 ;heap use? !! SET Bit5 to Make Kern Quiet
@@ -114,45 +122,86 @@ read_kernel_setup:
     mov cx, cmdLineLen
     rep movsb ; copies from DS:si to ES:di (0x1e000)
 
+loader:
     ; modern kernels are bzImage ones (despite name on disk and so
     ; the protected mode part must be loaded at 0x100000
     ; load nSectorsPerStep sectors at a time to 0x2000, then copy to 0x100000
 
-;load_kernel
     mov edx, [es:0x1f4] ; bytes to load
     shl edx, 4 ; (note that edx is initially loaded with size in "16-byte paras")
 
-; ================= functions ====================
-;length in bytes into edx
-; uses flopread [hddLBA] and highmove [highmove_addr] vars
-;clobbers 0x2000 segment
+    ; Prepare edi for movement to high memory. 
+    mov edi, 0x100000   ; destintation addr
 
-loader:
+    ; We read a couple of sectors before this so the first value of sectors to read needs to be aligned to a nSectorsPerStep boundary
+    ; initialRead = nSectorsPerStep - (flSect mod nSectorsPerStep)
+.alignSectorCount:
+    nSectorsPerStep equ nSectorsPerTrackDef ; For a regular floppy disk, we read 18 sectors at a time.
+    push dx
+    xor eax, eax
+    mov dx, ax
+    mov ax, word [flSect]
+
+    xor dx, dx
+    mov bx, nSectorsPerStep
+    div bx
+    mov bx, dx ; bx = remainder = flSect mod nSectorsPerStep
+
+    mov ax, nSectorsPerStep ; Subtract from nSectorsPerStep
+    sub ax, bx
+
+    shl ax, 9  ; To get bytes from sectors
+    pop dx
+
+    jmp loader.initialSkip
+
 .loop:
-    cmp edx, nSectorsPerStep*512
-    jl loader.part_2
-    jz loader.finish
 
-    push edx
-    mov ax, nSectorsPerStep ;count
+    mov ax, nSectorsPerStep*512
 
-    call readFloppyToSeg2000Offset0
+.initialSkip:
+    cmp eax, edx
+    jbe loader.moreThanNSectorsLeft
 
-    mov si, progStr
-    call print
-    pop edx
-    sub edx, nSectorsPerStep*512
+    mov ax, dx              ; We have less than nSectorsPerStep*512 bytes left, adjust
+    add ax, 512             ; If remainder is less than a sector's size we need to read it anyway, garbage data at the end doesn't matter
 
-    jmp loader.loop
+.moreThanNSectorsLeft:
+    push ax
+    push dx
+    shr ax, 9              ; Get sector count from bytes
 
-.part_2:   ; load less than nSectorsPerStep*512 sectors
-    shr edx, 9  ; divide by 512
-    inc edx     ; increase by one to get final sector if not multiple - otherwise just load junk - doesn't matter
-    mov ax, dx
+    xor bx, bx              ; offset
+    mov cx, 0x2000          ; segment
+    call flopread           ; Read from floppy
+    pop dx
+    pop ax
 
-    call readFloppyToSeg2000Offset0
+    ; If we end up here, the read worked and we can move the data to high memory
 
-.finish:
+    ; source = 0x20000
+    ; dst = highmove_addr (initially 0x100000), counting along with us
+.highmove:
+    mov cx, ax              ; counter in bytes
+    shr cx, 2               ; DWORDs
+    mov esi, 0x20000        ; source addr
+.moveloop:
+    mov ebx, [ds:esi]
+    mov [ds:edi], ebx
+    add si, 4               ; We never cross a 64kb boundary here, so we save 1 byte by adding to si instead of esi
+    add edi, 4              ; Increment high memory addr
+    loop .moveloop          ; for loop instruction, ecx is the counter
+
+    ; Data moved
+    call printProgress
+
+    sub edx, eax            ; Subtract the amount of bytes we just read
+    jns loader.loop         ; If we're not done yet, go back (jns = jump if not sign, if we read garbage data we subtract and the number becomes negative)
+
+    ; All data loaded and moved, start the kernel
+    xor edx, edx
+    call printProgress
+
 
 kernel_start:
     cli
@@ -165,37 +214,9 @@ kernel_start:
     mov sp, 0xe000
     jmp 0x1020:0
 
-; To save more bytes, we put this in a subroutine, as we have two calls like this
-readFloppyToSeg2000Offset0:
-    xor bx, bx ; offset
-    mov cx, 0x2000 ; seg
-    call flopread
-    call highmove
-    ret
+errStr db ' ERR',0 ; Save one byte 
 
-highmove_addr dd 0x100000
-; source = 0x2000
-; count = nSectorsPerStep*512  fixed, doesn't if matter we copy junk at end
-; don't think we can use rep movsb here as it wont use EDI/ESI in unreal mode
-highmove:
-    mov esi, 0x20000
-    mov edi, [highmove_addr]
-    mov edx, nSectorsPerStep*512
-    mov ecx, 0 ; pointer
-.loop:
-    mov eax, [ds:esi]
-    mov [ds:edi], eax
-    add esi, 4
-    add edi, 4
-    sub edx, 4
-    jnz highmove.loop
-    mov [highmove_addr], edi
-    ret
-
-errStr db ' ER'
-progStr db '.',0 ; Save one byte 
-
-errA20: mov byte [progStr], 0x30        ; Replace dot with the error number
+errA20: mov byte [errStr], 0x30        ; Replace dot with the error number
     jmp errPrint
 errRead:
     rol ax, 4
@@ -203,7 +224,7 @@ errRead:
     rol ax, 4
     call printHexDigit
     jmp errPrint
-errKernel: mov byte [progStr], 0x32     ; Replace dot with the error number
+errKernel: mov byte [errStr], 0x32     ; Replace dot with the error number
 errPrint:
     mov si, errStr
     call print
@@ -309,7 +330,6 @@ gdt:
 gdt_end:
 
 ; config options
-    nSectorsPerStep equ 6   ; largest value that seems to work...?
     cmdLine db cmdLineDef,0
     cmdLineLen equ $-cmdLine
     ;initRdSize dd initRdSizeDef ; from config.inc
@@ -318,6 +338,44 @@ gdt_end:
     ; see config.inc for more info
     ;nCylinders dw nCylindersPerHeadDef
     ;nSectors db nSectorsPerTrackDef
+
+; Progress string and value for printing - putting this here because sector 2 is quite full now
+progressStr         db 'Load:'
+progressValueStart  db '        '
+progressValueEnd    db ' left', 0x0d, 0
+
+; Print progress on the screen
+; edx = bytes left to read
+printProgress:
+    push eax
+    push edx
+    mov si, progressValueStart
+    mov cx, 7
+    mov byte [gdt], 10 ; gdt memory is unused at this point and starts with zeroes, so we can use it to put a dword 10 like this
+
+.fillSpaces:
+    mov byte [si], ' '   ; Fill spaces
+    inc si
+    loop .fillSpaces
+
+    mov eax, edx         ; EDX = bytes left
+.fillDigits:
+    xor edx, edx         ; Clear high bits of EDX
+    div dword [gdt]      ; Divide EAX by 10
+    add dl, '0'          ; Convert remainder to ASCII
+    mov [si], dl         ; Store digit
+    dec si
+
+    test eax, eax
+    jnz .fillDigits      ; Repeat until EAX == 0
+
+    lea si, progressStr
+    call print
+
+    pop edx
+    pop eax
+    ret
+
 
 ;boot sector magic
     times   510-($-$$)  db  0
@@ -441,9 +499,10 @@ bootCheck:
 
 
 newLineStr db 0xd, 0xa, 0
-bootStr db ' Press a key <except F8> to run QuickInstall ('
-bootTimerStr db '4 seconds left)', 0x0d, 0 ; the 0x0d means we go back to the start of the line so we can update the counter
-bootErrStr db 0xd, 0xa, ' No bootable Disk found! Halting.', 0
+bootStr db 'QuickInstall: Press any key <except F8> (Skipping in '
+bootTimerStr db '4)', 0x0d, 0 ; the 0x0d means we go back to the start of the line so we can update the counter
+bootErrStr db 0xd, 0xa, ' No bootable disk found!', 0
+
 
 lastSystemTime dd 0
 
