@@ -30,17 +30,14 @@ cmdLineLen:             equ $-cmdLine
 
 ; Progress string and value for printing - putting this here because sector 2 is quite full now
 progressStr:            db 'Load: ['
-progressBar:            db '                ',
-progressCarriageReturn: db ']', 0x0d, 0
+progressBar:            db '                 ]',
+progressCarriageReturn: db 0x0d, 0
 
 newLineStr:             db 0xd, 0xa, 0
-bootStr:                db 'Enter: Boot QuickInstall', 0x0d, 0x0a
-                        db 'F1:    No DMA', 0x0d, 0x0a
-                        db 'F2:    Disk DMA', 0x0d, 0x0a 
-                        db 'F3:    CD/DVD DMA', 0x0d, 0x0a
-                        db 'F4:    CF DMA', 0x0d, 0x0a
-skipStr:                db '(Skipping in '
-bootTimerValue:         db '4)', 0x0d, 0 ; the 0x0d means we go back to the start of the line so we can update the counter
+bootStr:                db 'Press ENTER to start QuickInstall', 0x0d, 0x0a, 0x0a
+                        db '[DMA Debug |F1: None|F2: HDD|F3: CD/DVD|F4: CF]', 0x0d, 0x0a
+skipStr:                db 'Skipping in '
+bootTimerValue:         db '4', 0x0d, 0 ; the 0x0d means we go back to the start of the line so we can update the counter
 
 errStr                  db ' ERR',0 ; Save one byte 
 
