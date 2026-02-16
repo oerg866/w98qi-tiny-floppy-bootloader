@@ -23,9 +23,9 @@ gdt_end:
 
 ; config options
 cmdLine:                db 'tsc=unstable noapic acpi=off'
-cmdLineDefualtEnd:      db 0
+cmdLineDefaultEnd:      db 0
                         db 'libata.dma='
-cmdLineLibataDmaValue:  db '0',0
+cmdLineLibataDmaValue:  db 0x01,0
 cmdLineLen:             equ $-cmdLine
 
 ; Progress string and value for printing - putting this here because sector 2 is quite full now
@@ -41,5 +41,6 @@ bootTimerValue:         db '4', 0x0d, 0 ; the 0x0d means we go back to the start
 
 errStr                  db ' ERR',0 ; Save one byte 
 
+lastKeyPress            dw 0
 totalSizeBytes:         ; These are used at different times so they share a memory location.
 lastSystemTime:         dd 0

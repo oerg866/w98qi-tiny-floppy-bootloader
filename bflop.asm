@@ -73,28 +73,32 @@ bootCheck:
     ; Get and discard the keypress
     ; This is necessary so we can accept further keys
     ; if the originally pressed key was not for us.
+    mov [lastKeyPress], ax      ; Save for later
     xor ah, ah
-    int 16h             
+    int 16h
+.skipBufferClear:
+
+    cmp ah, 0x1C            ; Enter
+    je short .enter
+
+    cmp ah, 0x3B                ; lower than F1?
+    jl short .delay1Second
+    cmp ah, 0x3E                ; higher than F4?
+    ja short .delay1Second
 
     ; Set up LibATA Flags!
     ; F1 = libata.dma=0     Disable all PATA and SATA DMA
     ; F2 = libata.dma=1     PATA and SATA Disk DMA only
     ; F3 = libata.dma=2     ATAPI (CDROM) DMA only
-    ; F4 = libata.dma=4
-
+    ; F4 = libata.dma=4     Compact flash DMA only
+    sub ah, 0x3B                ; Get 0-based F key index
+    mov cl, ah                  ; need this in CL so it can be used as a shift count
     mov si, cmdLineLibataDmaValue
-    mov byte [si], 0x08  
-
-    cmp ah, 0x3B           ; F1
-    je short .f1
-    cmp ah, 0x3C           ; F2
-    je short .f2
-    cmp ah, 0x3D           ; F3
-    je short .f3
-    cmp ah, 0x3E           ; F4
-    je short .f4
-    cmp ah, 0x1C            ; Enter
-    je short .enter
+    shl byte [si], cl           ; Shift the 0x01 already in there to the right to get the libata flag value
+    shr byte [si],1             ; Now shift it right once (because F1 should yield a 0 value)
+    add byte [si], 0x30         ; Make ASCII character out of this flag value
+    mov byte [cmdLineDefaultEnd], ' ' ; Un-terminate the default command line
+    jmp short .enter            ; Enter kernel load code path
 
 .delay1Second:
     call getCurrentTick
@@ -116,16 +120,6 @@ bootCheck:
 
     jmp .waitEnterLoop
 
-; F-Keys - starts with 8, shifts right by F count.
-; 
-.f1:    shr byte [si], 1    ; 8, 4, 2, 1, 0
-.f2:    shr byte [si], 1    ; 8, 4, 2, 1
-.f3:    shr byte [si], 1    ; 8, 4, 2
-.f4:    shr byte [si], 1    ; 8, 4
-    ; Turn into ASCII number character
-    add byte [si], 0x30
-    ; Make libata be part of the string by overwriting null terminator with a space
-    mov byte [cmdLineDefualtEnd], ' ' 
 .enter:
     ; User pressed a supported key. We can now resume booting.
     mov si, newLineStr
@@ -630,6 +624,12 @@ checkA20:
 ; Exits the bootloader, shuts down any cd floppy emulation
 ; and attempts to find and load a HDD boot sector.
 exitAndBootFromDisk:
+    ; Put back the last keystroke so that the next bootloader will receive it
+    ; e.g. F8 for Windows boot menu
+    mov cx, [lastKeyPress]
+    mov ah, 0x05
+    int 0x16                ; Int 16h Function 05h: Push character and scan code
+
     ; Reset CD-ROM floppy emulation if active
     mov ax, 0x4B00
     xor dx, dx
@@ -669,9 +669,7 @@ exitAndBootFromDisk:
 
 .bootError:
     int 0x18        ; Should yield a "PREESS A KEY TO REBOOT" screen.
-
                 
-;    db '                                                              '
 ; All data lives here...
 %include "data.inc"
 
