@@ -486,14 +486,6 @@ print.end:
 ;   A20 GATE RELATED CODE
 ;   ----------------------------------------------
 
-; Jumptable for different methods to enable A20 gate
-enableA20GateMethods:
-    dw A20_BIOS ; via BIOS call
-    dw A20_KBC  ; via KBC
-    dw A20_fast ; via Port 0x92
-
-A20MethodCount equ 3
-
 ; A20 method via BIOS call
 A20_BIOS:
     mov ax, 0x2403      ; Check if this method is supported first (else it will reboot!!!)
@@ -532,15 +524,14 @@ A20_fast:
 ; Zero flag set = error
 ; Zero flag clear = successful
 enableA20Gate:
-    mov si, enableA20GateMethods
-    mov cx, A20MethodCount
-.a20loop:
-    call word [si]
-    inc si
-    inc si
+    call A20_BIOS
     call checkA20   ; is A20 gate actually enabled?
     jnz .exit       ; if yes, exit, the flag will still be valid for caller
-    loop .a20loop   ; Next method
+    call A20_KBC
+    call checkA20   ; is A20 gate actually enabled?
+    jnz .exit       ; if yes, exit, the flag will still be valid for caller
+    call A20_fast
+    call checkA20   ; is A20 gate actually enabled?
 .exit:
     ret
 
