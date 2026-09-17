@@ -47,6 +47,8 @@ elif [[ "$DISKSIZE" -eq 1763328 ]]; then
 elif [[ "$DISKSIZE" -eq 2949120 ]]; then
     CYLINDERS=80
     SECTORS=36
+    # Only the CD-ROM / 2.88M kernel has ACPI/APIC support, so only this build gets the toggle
+    NASMEXTRA="-D ACPI_TOGGLE"
 else
     echo "Unknown disk size specified!!! Aborting!"
     exit 127
@@ -58,7 +60,7 @@ K_SZ=`stat -c %s $KERN`
 # Padding for the boot loader, 2 sectors á 512 bytes -> 1024 bytes
 K_PAD=$((1024 - $K_SZ % 1024))
 
-nasm -D nCylindersPerHeadDef=$CYLINDERS -D nSectorsPerTrackDef=$SECTORS -o $OUTPUT $INPUT
+nasm -D nCylindersPerHeadDef=$CYLINDERS -D nSectorsPerTrackDef=$SECTORS $NASMEXTRA -o $OUTPUT $INPUT
 cp $OUTPUT bootloader.bin
 
 cat $KERN >> $OUTPUT

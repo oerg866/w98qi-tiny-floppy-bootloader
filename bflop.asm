@@ -47,6 +47,7 @@ entry:
 ; ENTER  = Boot QuickInstall
 ; 0 - 7  = Set libata.dma mask (bit 0 = ATA disks, bit 1 = ATAPI, bit 2 = CompactFlash)
 ; A      = Toggle 'noapic acpi=off' on the command line (present by default)
+;          Only available if ACPI_TOGGLE is defined (2.88M / CD-ROM build), the floppy kernel has no ACPI/APIC support.
 ;
 ; Any other key is remembered and pushed back into the keyboard buffer when we time out,
 ; so that the next bootloader receives it (e.g. F8 for the Windows boot menu).
@@ -95,6 +96,7 @@ bootCheck:
     cmp al, 0x0D            ; Enter
     je .enter
 
+%ifdef ACPI_TOGGLE
     or al, 0x20             ; Make lowercase
     cmp al, 'a'
     jne .notAcpiToggle
@@ -104,6 +106,7 @@ bootCheck:
     jmp .changed
 
 .notAcpiToggle:
+%endif
     sub al, '0'
     cmp al, 7
     ja .waitLoop            ; Not a key for us, keep waiting

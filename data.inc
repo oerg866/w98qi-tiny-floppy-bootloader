@@ -36,7 +36,11 @@ progressBar:            db '                 ]',
 progressCarriageReturn: db 0x0d, 0
 
 newLineStr:             db 0xd, 0xa, 0
+%ifdef ACPI_TOGGLE
 debugStr:               db 0xd, 0xa, '(debug options: 0-7 = change ATA DMA mask, A = toggle ACPI/APIC)', 0xd, 0xa, 0
+%else
+debugStr:               db 0xd, 0xa, '(debug options: 0-7 = change ATA DMA mask)', 0xd, 0xa, 0
+%endif
 enterStr:               db 0xd, 0xa, 'ENTER to start QuickInstall ['
 timerDigit:             db '4s]', 0      ; Printed on its own to update the countdown
 backspaceStr:           db 8, 8, 8, 0    ; Moves the cursor back over 'Ns]'
