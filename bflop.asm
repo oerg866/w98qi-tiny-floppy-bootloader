@@ -42,94 +42,80 @@ entry:
     mov bx, 0x7E00
     call flopread
 
-; This check asks the user if he wants to boot our floppy/CDROM and if it times out then we
-; attempt to boot from a hard disk.
+; Boot prompt. Shows the debug options, the current kernel command line and a countdown.
 ;
-; ENTER   = Boot normally
-; F1 - F4 = Certain levels of DMA dis/enablement
+; ENTER  = Boot QuickInstall
+; 0 - 7  = Set libata.dma mask (bit 0 = ATA disks, bit 1 = ATAPI, bit 2 = CompactFlash)
+; A      = Toggle 'noapic acpi=off' on the command line (present by default)
+;
+; Any other key is remembered and pushed back into the keyboard buffer when we time out,
+; so that the next bootloader receives it (e.g. F8 for the Windows boot menu).
 bootCheck:
-    mov si, newLineStr
+    mov si, debugStr
     call print
 
-    mov si, bootStr
-    call print
-
-    ; Get initial tick value
-    call getCurrentTick
-
-    mov di, lastSystemTime
-    mov dword [di], ebx
-
-.waitEnterLoop:
-    ; Print (skipping in X), the carriage return will place the cursor back on the start of the line
-    mov si, skipStr
-    call print
-
-    ; check keyboard buffer
-    mov ah, 0x01        ; check for keystroke
-    int 0x16
-    jz .delay1Second    ; No key was pressed
-
-    ; Get and discard the keypress
-    ; This is necessary so we can accept further keys
-    ; if the originally pressed key was not for us.
-    mov [lastKeyPress], ax      ; Save for later
-    xor ah, ah
-    int 16h
-.skipBufferClear:
-
-    cmp ah, 0x1C            ; Enter
-    je short .enter
-
-    cmp ah, 0x3B                ; lower than F1?
-    jl short .delay1Second
-    cmp ah, 0x3E                ; higher than F4?
-    ja short .delay1Second
-
-    ; Set up LibATA Flags!
-    ; F1 = libata.dma=0     Disable all PATA and SATA DMA
-    ; F2 = libata.dma=1     PATA and SATA Disk DMA only
-    ; F3 = libata.dma=2     ATAPI (CDROM) DMA only
-    ; F4 = libata.dma=4     Compact flash DMA only
-    sub ah, 0x3B                ; Get 0-based F key index
-    mov cl, ah                  ; need this in CL so it can be used as a shift count
-    mov si, cmdLineLibataDmaValue
-    shl byte [si], cl           ; Shift the 0x01 already in there to the right to get the libata flag value
-    shr byte [si],1             ; Now shift it right once (because F1 should yield a 0 value)
-    add byte [si], 0x30         ; Make ASCII character out of this flag value
-    mov byte [cmdLineDefaultEnd], ' ' ; Un-terminate the default command line
-    jmp short .enter            ; Enter kernel load code path
-
-.delay1Second:
-    call getCurrentTick
-
-    ; No check for midnight rollover - need to save bytes...
-    ; Check if this is a second's worth of difference.
-    mov ecx, dword [di]
-    mov eax, ebx
-    sub eax, ecx
-    cmp eax, 18 ; It's actually 18.2 clocks per second but good enough...
-    jl .waitEnterLoop ; Second hasnt elapsed yet, back to the loop
-
-    mov dword [di], ebx
-    mov al, byte [bootTimerValue]
-    dec al
-    cmp al, 0x30 ; '0' means we've timed out
-    jz exitAndBootFromDisk
-    mov byte [bootTimerValue], al
-
-    jmp .waitEnterLoop
-
-.enter:
-    ; User pressed a supported key. We can now resume booting.
-    mov si, newLineStr
-    call print
-
-    ; Print kernel command line, useful for diagnosis (I guess)
     mov si, cmdLine
     call print
 
-    ; Ugh this is wasteful, but no clue how to make it better...
+    mov si, enterStr
+    call print
+
+    ; BIOS tick counter (18.2 Hz) at 0040:006C, used as timeout reference
+    mov bx, [0x46C]
+
+.waitLoop:
+    mov ah, 0x01    ; check for keystroke
+    int 0x16
+    jnz .keyPressed
+
+    ; No key was pressed
+    mov ax, [0x46C] ; get BIOS tick counter
+    sub ax, bx
+    cmp ax, 18      ; It's actually 18.2 ticks per second but good enough...
+    jb .waitLoop
+
+    ; A second has passed, update the countdown digit on screen
+    add bx, 18
+    mov si, backspaceStr
+    call print
+    dec byte [timerDigit]
+
+    ; prints 'Ns]', previous print moved the cursor back to this spot in the text
+    mov si, timerDigit
+    call print
+    cmp byte [timerDigit], '0'
+    jne .waitLoop
+    jmp exitAndBootFromDisk
+
+.keyPressed:
+    xor ah, ah              ; fetch the key
+    int 0x16
+    mov [lastKeyPress], ax  ; Save for later in case we time out
+
+    cmp al, 0x0D            ; Enter
+    je .enter
+
+    or al, 0x20             ; Make lowercase
+    cmp al, 'a'
+    jne .notAcpiToggle
+
+    ; NUL <-> ' ' : hides / shows 'noapic acpi=off'
+    xor byte [cmdLineAcpiSep], 0x20
+    jmp .changed
+
+.notAcpiToggle:
+    sub al, '0'
+    cmp al, 7
+    ja .waitLoop            ; Not a key for us, keep waiting
+    add al, '0'
+    mov [cmdLineDmaValue], al
+
+.changed:
+    mov byte [timerDigit], '4'
+    jmp bootCheck           ; Show everything again with the new command line
+
+.enter:
+    ; User pressed ENTER. We can now resume booting.
     mov si, newLineStr
     call print
 
@@ -382,27 +368,6 @@ flopread.success:
 ; This must be in this sector because it is used in flopread :) 
 flSect dw 1 ; start sector (this is zero-indexed)
 
-; Get current system tick using  int 0x1a
-; Returns midnight flag in al and 32 bit tick value in ebx
-getCurrentTick:
-    xor ax, ax
-    int 0x1a
-
-    mov bx, cx  ; Make 32-bit value ... easier
-    shl ebx, 16
-    mov bx, dx
-    ret
-
-;boot sector magic
-    times   510-($-$$)  db  0
-    dw  0xaa55
-
-; ----------------------------------------------------------------
-;
-; SECOND SECTOR STARTS HERE
-;
-Sector2:
-
 ; Print read error
 ; Should be in sector 1 but ran out of space :(
 errRead:
@@ -416,6 +381,25 @@ errPrint:
     mov si, errStr
     call print
     jmp $
+
+; Fast A20 Method via Port 0x92
+; (moved here for space reasons)
+A20_fast:
+    in al, 0x92
+    or al, 2
+    and al, 0xfe    ; mask out reset bit!!
+    out 0x92,al
+    ret
+
+;boot sector magic
+    times   510-($-$$)  db  0
+    dw  0xaa55
+
+; ----------------------------------------------------------------
+;
+; SECOND SECTOR STARTS HERE
+;
+Sector2:
 
 ; Print progress on the screen
 ; edx = bytes left to read
@@ -504,14 +488,6 @@ A20_KBC:
 
     mov al, 0xff
     call waitForKBC    
-    ret
-
-; Fast A20 Method via Port 0x92
-A20_fast:
-    in al, 0x92
-    or al, 2
-    and al, 0xfe    ; mask out reset bit!!
-    out 0x92,al
     ret
 
 ; Enable A20 Gate

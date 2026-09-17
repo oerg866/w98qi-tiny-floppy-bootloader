@@ -22,10 +22,12 @@ gdt:
 gdt_end:
 
 ; config options
-cmdLine:                db 'tsc=unstable noapic acpi=off'
-cmdLineDefaultEnd:      db 0
-                        db 'libata.dma='
-cmdLineLibataDmaValue:  db 0x01,0
+; The command line is copied to the kernel as a whole (cmdLineLen bytes).
+; It is null terminated, the AcpiSep determines whether or not that part is seen by the kernel or not.
+cmdLine:                db 'tsc=unstable libata.dma='
+cmdLineDmaValue:        db '7'
+cmdLineAcpiSep:         db ' '
+                        db 'noapic acpi=off', 0
 cmdLineLen:             equ $-cmdLine
 
 ; Progress string and value for printing - putting this here because sector 2 is quite full now
@@ -34,13 +36,12 @@ progressBar:            db '                 ]',
 progressCarriageReturn: db 0x0d, 0
 
 newLineStr:             db 0xd, 0xa, 0
-bootStr:                db 'Press ENTER to start QuickInstall', 0x0d, 0x0a, 0x0a
-                        db '[DMA Debug |F1: None|F2: HDD|F3: CD/DVD|F4: CF]', 0x0d, 0x0a
-skipStr:                db 'Skipping in '
-bootTimerValue:         db '4', 0x0d, 0 ; the 0x0d means we go back to the start of the line so we can update the counter
+debugStr:               db 0xd, 0xa, '(debug options: 0-7 = change ATA DMA mask, A = toggle ACPI/APIC)', 0xd, 0xa, 0
+enterStr:               db 0xd, 0xa, 'ENTER to start QuickInstall ['
+timerDigit:             db '4s]', 0      ; Printed on its own to update the countdown
+backspaceStr:           db 8, 8, 8, 0    ; Moves the cursor back over 'Ns]'
 
 errStr                  db ' ERR',0 ; Save one byte 
 
 lastKeyPress            dw 0
-totalSizeBytes:         ; These are used at different times so they share a memory location.
-lastSystemTime:         dd 0
+totalSizeBytes:         dd 0
